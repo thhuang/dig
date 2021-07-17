@@ -24,7 +24,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"go.uber.org/dig/internal/digreflect"
+	"github.com/thhuang/dig/internal/digreflect"
 )
 
 type cycleEntry struct {
@@ -70,6 +70,58 @@ func verifyAcyclic(c containerStore, n provider, k key) error {
 	if err != nil {
 		err = errf("this function introduces a cycle", err)
 	}
+	return err
+}
+
+func detectMissingDep(n provider, c containerStore, visited map[key]struct{}) error {
+	var err error
+
+	fn := func(param param) bool {
+		if err != nil {
+			return false
+		}
+		var (
+			k         key
+			providers []provider
+		)
+		switch p := param.(type) {
+		case paramSingle:
+			k = key{name: p.Name, t: p.Type}
+			if _, ok := visited[k]; ok {
+				// We've already checked the dependencies for this type.
+				return false
+			}
+			providers = c.getValueProviders(p.Name, p.Type)
+		case paramGroupedSlice:
+			// NOTE: The key uses the element type, but not the slice type.
+			k = key{group: p.Group, t: p.Type.Elem()}
+			if _, ok := visited[k]; ok {
+				// We've already checked the dependencies for this type.
+				return false
+			}
+			providers = c.getGroupProviders(p.Group, p.Type.Elem())
+		default:
+			// Recurse for non-edge params.
+			return true
+		}
+
+		if len(providers) == 0 {
+			err = fmt.Errorf(`Missing dependency for %v `, k)
+			return false
+		}
+		for _, n := range providers {
+			if e := detectMissingDep(n, c, visited); e != nil {
+				err = e
+				return false
+			}
+		}
+		visited[k] = struct{}{}
+
+		return true
+	}
+
+	walkParam(n.ParamList(), paramVisitorFunc(fn))
+
 	return err
 }
 
